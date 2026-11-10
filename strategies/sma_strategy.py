@@ -1,17 +1,25 @@
-from strategies.strategy import Strategy
 import pandas as pd
 
+from strategies.strategy import Strategy
+
+
 class SMAStrategy(Strategy):
-    """Simple Moving Average Crossover Strategy."""
-    def generate_signals(self, data: pd.DataFrame):
-        data = data.copy()
-        data['SMA50'] = data['Close'].rolling(window=50).mean()
-        data['SMA200'] = data['Close'].rolling(window=200).mean()
-        data['Signal'] = 0
-        crossover = (
-            (data['SMA50'] > data['SMA200']) &
-            (data['SMA50'].shift(1) <= data['SMA200'].shift(1))
-        )
-        data.loc[crossover, 'Signal'] = 1
-        data['Position'] = data['Signal'].diff().fillna(0)
-        return data
+    """Long while the fast moving average is above the slow one, flat otherwise."""
+
+    def __init__(self, fast: int = 50, slow: int = 200):
+        if fast >= slow:
+            raise ValueError("fast window must be shorter than slow window")
+        self.fast = fast
+        self.slow = slow
+
+    def indicators(self, data: pd.DataFrame) -> pd.DataFrame:
+        return pd.DataFrame({
+            f"SMA{self.fast}": data["Close"].rolling(self.fast).mean(),
+            f"SMA{self.slow}": data["Close"].rolling(self.slow).mean(),
+        })
+
+    def generate_signals(self, data: pd.DataFrame) -> pd.Series:
+        ind = self.indicators(data)
+        fast, slow = ind.iloc[:, 0], ind.iloc[:, 1]
+        # Comparisons against NaN are False, so the warm-up period stays flat.
+        return (fast > slow).astype(int).rename("target")
