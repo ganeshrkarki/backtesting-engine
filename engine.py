@@ -12,14 +12,18 @@ class Trade:
     entry_date: pd.Timestamp
     entry_price: float
     shares: int
+    entry_fee: float = 0.0
     exit_date: Optional[pd.Timestamp] = None
     exit_price: Optional[float] = None
+    exit_fee: float = 0.0
 
     @property
     def pnl(self) -> Optional[float]:
+        """Net P&L after slippage (already in the fill prices) and commissions."""
         if self.exit_price is None:
             return None
-        return (self.exit_price - self.entry_price) * self.shares
+        gross = (self.exit_price - self.entry_price) * self.shares
+        return gross - self.entry_fee - self.exit_fee
 
 
 class Engine:
@@ -27,6 +31,9 @@ class Engine:
 
     The target position decided at day t's close is filled at day t+1's open,
     so a signal can never trade on the price that produced it.
+
+    Costs are in basis points of traded notional. Slippage moves the fill
+    price against us (buy higher, sell lower); commission is charged on top.
     """
 
     def __init__(
@@ -37,10 +44,16 @@ class Engine:
         end: str,
         initial_capital: float = 100_000,
         allocation: float = 1.0,
+        commission_bps: float = 1.0,
+        slippage_bps: float = 5.0,
         data: Optional[pd.DataFrame] = None,
     ):
         if not 0 < allocation <= 1:
             raise ValueError("allocation must be in (0, 1]")
+        if commission_bps < 0 or slippage_bps < 0:
+            raise ValueError("costs cannot be negative")
+        self.commission = commission_bps / 10_000
+        self.slippage = slippage_bps / 10_000
         self.strategy = strategy
         self.symbol = symbol
         self.start = start
@@ -66,15 +79,20 @@ class Engine:
 
         for date, bar, order in zip(data.index, data.itertuples(), orders):
             if order == 1 and shares == 0:
-                qty = int(cash * self.allocation // bar.Open)
+                fill = bar.Open * (1 + self.slippage)
+                qty = int(cash * self.allocation // (fill * (1 + self.commission)))
                 if qty > 0:
-                    cash -= qty * bar.Open
+                    fee = qty * fill * self.commission
+                    cash -= qty * fill + fee
                     shares = qty
-                    open_trade = Trade(date, bar.Open, qty)
+                    open_trade = Trade(date, fill, qty, entry_fee=fee)
             elif order == 0 and shares > 0:
-                cash += shares * bar.Open
+                fill = bar.Open * (1 - self.slippage)
+                fee = shares * fill * self.commission
+                cash += shares * fill - fee
                 open_trade.exit_date = date
-                open_trade.exit_price = bar.Open
+                open_trade.exit_price = fill
+                open_trade.exit_fee = fee
                 self.trades.append(open_trade)
                 open_trade = None
                 shares = 0
